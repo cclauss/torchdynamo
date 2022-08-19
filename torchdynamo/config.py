@@ -27,7 +27,7 @@ class AccessLimitingConfig(ModuleType):
     verbose = False
 
     # verify the correctness of optimized backend
-    verify_correctness = False
+    verify_correctness = True
 
     # need this many ops to create an FX graph
     minimum_call_count = 1

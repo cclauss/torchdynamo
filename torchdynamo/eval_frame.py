@@ -10,11 +10,7 @@ from unittest.mock import patch
 
 import torch
 import torch.utils._pytree as pytree
-
-import torchdynamo
-from torchdynamo.utils import checkpoint_params
-from torchdynamo.utils import clone_inputs
-from torchdynamo.utils import same
+from torchdynamo.debug_utils import wrap_dynamo_debug
 
 from . import config
 from . import convert_frame
@@ -22,6 +18,7 @@ from . import skipfiles
 from . import utils
 from .exc import ResetRequired
 from .mutation_guard import install_generation_tagging_init
+from .optimizations.backends import CorrectnessCheckerBackend
 
 log = logging.getLogger(__name__)
 
@@ -234,49 +231,24 @@ def _optimize_catch_errors(compile_fn, backend_ctx_ctor=null_context):
     )
 
 
-class WrapperBackend:
-    def __init__(self, backend=None):
-        self.backend = backend
+def wrap_compiler_fn(compiler_fn, backend_str):
+    """CorrectnessCheckerBackend if config.verify_correctness is True"""
+    if config.verify_correctness:
+        wrapper_backend_compiler_fn = wrap_dynamo_debug(compiler_fn, backend_str)
+        # # wrap backend if verify_correctness is True
+        # wrapper_backend_compiler_fn = CorrectnessCheckerBackend(
+        #     compiler_fn, backend_str
+        # )
 
-    @property
-    def example_inputs(self):
-        return clone_inputs(self.original_example_inputs)
+        wrapper_backend_compiler_fn._torchdynamo_orig_callable = compiler_fn
+        return wrapper_backend_compiler_fn
 
-    def __call__(self, gm: torch.fx.GraphModule, example_inputs):
-
-        self.restore = checkpoint_params(gm)
-        self.original_example_inputs = clone_inputs(example_inputs)
-        self.gm = gm
-        copy_gm = copy.deepcopy(self.gm)
-        self.candidate = self.backend(copy_gm, self.original_example_inputs)
-
-        if self.candidate is None or self.candidate is self.gm.forward:
-            return self.gm.forward
-
-        if not config.verify_correctness:
-            return self.candidate
-
-        # if verify_correctness=True
-        try:
-            correct = self.gm.forward(*self.example_inputs)
-            result = self.candidate(*self.example_inputs)
-
-            # TODO: replace `same` function with the one in testing
-            if same(correct, result):
-                return self.candidate
-
-            raise RuntimeError(f"incorrect results of backend {self}")
-            return self.gm.forward
-
-        except Exception:
-            log.exception("error in verify_correctness")
-            raise
-        finally:
-            self.restore()
+    return compiler_fn
 
 
 def get_compiler_fn(compiler_fn):
     """Expand backend strings to functions"""
+    backend_str = compiler_fn if isinstance(compiler_fn, str) else None
     if compiler_fn == "inductor":
         from torchinductor.compile_fx import compile_fx
 
@@ -286,7 +258,7 @@ def get_compiler_fn(compiler_fn):
 
         compiler_fn = BACKENDS[compiler_fn]
 
-    return compiler_fn
+    return wrap_compiler_fn(compiler_fn, backend_str)
 
 
 def optimize(backend, nopython=False, guard_export_fn=None):

@@ -1,18 +1,26 @@
 import copy
+import dataclasses
 import functools
 import io
 import logging
 import os
 import subprocess
 import tempfile
+import textwrap
 import warnings
+from typing import Callable
 
 import numpy as np
 import torch
 
 import torchdynamo.convert_frame
+from torchdynamo import config
+from torchdynamo.exc import CorrectnessCheckFailed
 from torchdynamo.optimizations.subgraph import SubGraph
+from torchdynamo.utils import checkpoint_params
+from torchdynamo.utils import clone_inputs
 from torchdynamo.utils import identity
+from torchdynamo.utils import same
 
 log = logging.getLogger(__name__)
 BACKENDS = dict()
@@ -803,3 +811,107 @@ def fx2trt_compiler(gm: torch.fx.GraphModule, example_inputs):
             "FX2TRT conversion failed on the subgraph. Return GraphModule forward instead"
         )
         return gm.forward
+
+
+class CorrectnessCheckerBackend:
+    """
+    Wraps the compiler backend with correctness checker.
+    """
+
+    def __init__(self, backend=None, backend_str=None):
+        self.backend = backend
+        self.backend_str = backend_str
+
+    @property
+    def example_inputs(self):
+        return clone_inputs(self.original_example_inputs)
+
+    def dump_state(self, fx_g, inps):
+        prep_inputs = textwrap.dedent(
+            f"""
+            import torch
+            import torchdynamo
+            from torchdynamo.testing import reduce_to_scalar_loss
+
+            inps = {[(i.shape, i.dtype, i.device.type, i.requires_grad) for i in inps]}
+            inps = [torch.zeros(())] + [torch.ones(shape, dtype=dtype, device=device) for (shape, dtype, device) in inps]
+            """
+        )
+
+        prep_model = fx_g.code
+
+        repro_backend = ""
+        if self.backend_str is not None:
+            repro_backend = textwrap.dedent(
+                f"""
+                fn = forward
+                optimized_fn = torchdynamo.optimize("{self.backend_str}")(fn)
+                optimized_fn(*inps)
+                """
+            )
+
+        print(prep_inputs + prep_model + repro_backend)
+
+    def __call__(self, gm: torch.fx.GraphModule, example_inputs):
+        from functorch.compile import minifier
+        from torchdynamo.testing import reduce_to_scalar_loss
+
+
+        self.restore = checkpoint_params(gm)
+        self.original_example_inputs = clone_inputs(example_inputs)
+        self.gm = gm
+        copy_gm = copy.deepcopy(self.gm)
+        self.candidate = self.backend(copy_gm, self.original_example_inputs)
+
+        if self.candidate is None or self.candidate is self.gm.forward:
+            return self.gm.forward
+
+        def does_it_run(mod, inps):
+            ref = mod(*inps)
+            reduce_to_scalar_loss(ref).backward()
+
+            compiled_gm = self.backend(mod, inps)
+            res = compiled_gm(*inps)
+            reduce_to_scalar_loss(res).backward()
+
+            if same(ref, res):
+                return True
+            return False
+
+
+        def fails(mod, inps):
+            try:
+                if does_it_run(mod, inps):
+                    return False
+                return True
+            except Exception as e:
+                if "view size is" in str(e):
+                    return True
+                return False
+
+
+        config.raise_on_backend_error = True
+        try:
+            if does_it_run(self.gm, example_inputs):
+                return self.candidate
+            raise CorrectnessCheckFailed(f"incorrect results of backend {self}")
+        except CorrectnessCheckFailed:
+            log.exception("Accuracy check failed")
+            raise
+        except Exception:
+            log.exception(f"Failed for {self.backend_str}")
+
+            r = minifier(
+                copy_gm, self.original_example_inputs, fails, dump_state=self.dump_state
+            )
+            r[0].to_folder("repro")
+            print(r[0])
+
+            import pdb
+
+            pdb.set_trace()
+
+            log.exception("error in verify_correctness")
+            raise
+        finally:
+            self.restore()

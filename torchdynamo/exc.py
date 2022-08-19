@@ -72,6 +72,10 @@ class Unsupported(TorchDynamoException):
         counters[category][self.msg] += 1
 
 
+class CorrectnessCheckFailed(TorchDynamoException):
+    pass
+
+
 def unimplemented(msg: str):
     assert msg != os.environ.get("BREAK", False)
     raise Unsupported(msg)
