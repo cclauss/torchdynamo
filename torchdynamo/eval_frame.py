@@ -165,7 +165,7 @@ class _TorchDynamoContext:
         # of decorators.
         _fn._torchdynamo_orig_callable = fn
 
-        # If the function is called with torchdynamo.optimize decorator, we
+        # If the function is called using torchdynamo.optimize decorator, we
         # should prevent any type of skipping.
         if callback not in (None, False):
             always_optimize_code_objects[fn.__code__] = True
@@ -311,11 +311,6 @@ def optimize(backend, nopython=False, guard_export_fn=None):
         @torchdynamo.optimize("ofi")
         def toy_example(a, b):
             ...
-
-        or
-
-        with torchdynamo.optimize(my_compiler):
-           ...
     """
     backend = get_compiler_fn(backend)
 
