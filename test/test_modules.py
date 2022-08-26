@@ -646,8 +646,8 @@ class NNModuleTests(torchdynamo.testing.TestCase):
         m = UnsupportedMethodCall()
         i = torch.randn(10)
         cnt = torchdynamo.testing.CompileCounter()
-        with torchdynamo.optimize(cnt):
-            r = m(i)
+        opt_m = torchdynamo.optimize(cnt)(m)
+        r = opt_m(i)
         self.assertTrue(torchdynamo.testing.same(r, m(i)))
         self.assertEqual(cnt.op_count, 5)
 
@@ -655,8 +655,8 @@ class NNModuleTests(torchdynamo.testing.TestCase):
         m = UnsupportedModuleCall()
         i = torch.randn(10)
         cnt = torchdynamo.testing.CompileCounter()
-        with torchdynamo.optimize(cnt):
-            r = m(i)
+        opt_m = torchdynamo.optimize(cnt)(m)
+        r = opt_m(i)
         self.assertTrue(torchdynamo.testing.same(r, m(i)))
         self.assertEqual(cnt.op_count, 6)
 
@@ -681,15 +681,21 @@ class NNModuleTests(torchdynamo.testing.TestCase):
 
         # guarantee that we have installed
         # the generation tagging function
-        with torchdynamo.optimize_assert(cnt):
+        @torchdynamo.optimize_assert(cnt)
+        def nothing():
             pass
 
-        m1 = torch.nn.Linear(10, 10)
+        nothing()
+
+        def linear():
+            return torch.nn.Linear(10, 10)
+
+        m1 = linear()
         prev_generation = GenerationTracker.get_generation_value(m1)
         cur_generation = prev_generation + 1
 
-        with torchdynamo.optimize_assert(cnt):
-            m2 = torch.nn.Linear(10, 10)
+        opt_linear = torchdynamo.optimize_assert(cnt)(linear)
+        m2 = opt_linear
 
         self.assertEqual(GenerationTracker.get_generation_value(m1), prev_generation)
         self.assertEqual(GenerationTracker.get_generation_value(m2), cur_generation)
@@ -718,8 +724,8 @@ class NNModuleTests(torchdynamo.testing.TestCase):
         x = torch.randn(1).as_subclass(TensorProxy)
         cnt = torchdynamo.testing.CompileCounter()
         out1 = foo(x)
-        with torchdynamo.optimize(cnt, nopython=True):
-            out2 = foo(x)
+        opt_foo = torchdynamo.optimize(cnt, nopython=True)(foo)
+        out2 = opt_foo(x)
 
         self.assertEqual(cnt.op_count, 4)
         self.assertTrue(torchdynamo.testing.same(out1, out2))
@@ -755,8 +761,8 @@ class NNModuleTests(torchdynamo.testing.TestCase):
             x = torch.randn(1)
             cnt = torchdynamo.testing.CompileCounter()
             out1 = foo(x)
-            with torchdynamo.optimize(cnt, nopython=True):
-                out2 = foo(x)
+            opt_foo = torchdynamo.optimize(cnt, nopython=True)(foo)
+            out2 = opt_foo(x)
 
             self.assertEqual(cnt.op_count, 4)
             self.assertTrue(torchdynamo.testing.same(out1, out2))
@@ -782,8 +788,8 @@ class NNModuleTests(torchdynamo.testing.TestCase):
         data = torch.randn(1)
         out1 = m(data)
         cnt = torchdynamo.testing.CompileCounter()
-        with torchdynamo.optimize(cnt, nopython=True):
-            out2 = m(data)
+        opt_m = torchdynamo.optimize(cnt, nopython=True)(m)
+        out2 = opt_m(data)
         self.assertEqual(cnt.op_count, 2)
         self.assertTrue(torchdynamo.testing.same(out1, out2))
 
@@ -793,8 +799,8 @@ class NNModuleTests(torchdynamo.testing.TestCase):
         out1 = m(data)
         cnt = torchdynamo.testing.CompileCounter()
         torchdynamo.reset()
-        with torchdynamo.optimize(cnt, nopython=True):
-            out2 = m(data)
+        opt_m = torchdynamo.optimize(cnt, nopython=True)(m)
+        out2 = opt_m(data)
 
         self.assertEqual(cnt.op_count, 1)
         self.assertTrue(torchdynamo.testing.same(out1, out2))
@@ -802,11 +808,16 @@ class NNModuleTests(torchdynamo.testing.TestCase):
         module_dict = torch.nn.ModuleDict({"cat": torch.nn.Conv2d(1, 1, 1)})
         pre = m(data)
         cnt.clear()
-        with torchdynamo.optimize(cnt, nopython=False):
+
+        def fn(m, data, M):
             opt_pre = m(data)
             m = M(module_dict)
             data = torch.randn(1)
             out1 = m(data)
+            return opt_pre, out1
+
+        opt_fn = torchdynamo.optimize(cnt, nopython=False)(fn)
+        opt_pre, out1 = opt_fn(m, data, M)
 
         out_post = m(data)
         self.assertEqual(cnt.frame_count, 1)
@@ -819,13 +830,13 @@ class NNModuleTests(torchdynamo.testing.TestCase):
 
         cnt = torchdynamo.testing.CompileCounter()
         module = LazyModule()
-        with torchdynamo.optimize(cnt):
 
-            def test_static_module():
-                input = torch.ones(*input_shape)
-                module(input)
+        def test_static_module():
+            input = torch.ones(*input_shape)
+            module(input)
 
-            test_static_module()
+        opt_test_static_module = torchdynamo.optimize(cnt)(test_static_module)
+        opt_test_static_module()
 
         self.assertTrue(
             isinstance(module, MaterializedModule),
@@ -835,15 +846,15 @@ class NNModuleTests(torchdynamo.testing.TestCase):
 
         # test when mapped to UnspecializedNNModule
         module = LazyModule()
-        with torchdynamo.optimize(cnt):
 
-            def test_unspecialized():
-                nonlocal module
-                module = LazyModule()
-                input = torch.ones(*input_shape)
-                module(input)
+        def test_unspecialized():
+            nonlocal module
+            module = LazyModule()
+            input = torch.ones(*input_shape)
+            module(input)
 
-            test_unspecialized()
+        opt_test_unspecialized = torchdynamo.optimize(cnt)(test_unspecialized)
+        opt_test_unspecialized()
 
         self.assertTrue(
             isinstance(module, MaterializedModule),
@@ -859,14 +870,14 @@ class NNModuleTests(torchdynamo.testing.TestCase):
         cnt = torchdynamo.testing.CompileCounter()
 
         torchdynamo.reset()
-        with torchdynamo.optimize(cnt):
 
-            def test_torch_static():
-                input = torch.ones(*input_shape)
-                return module(input)  # fully materialized
+        def test_torch_static():
+            input = torch.ones(*input_shape)
+            return module(input)  # fully materialized
 
-            test_torch_static()
-            out = test_torch_static()
+        opt_test_torch_static = torchdynamo.optimize(cnt)(test_torch_static)
+        opt_test_torch_static()
+        out = opt_test_torch_static()
 
         self.assertTrue(same(out, module(torch.ones(*input_shape))))
 
