@@ -256,6 +256,7 @@ def wrap_debug(compiler, compiler_name: str):
 
 
 def fwd_bwd(gm, args):
+    # TODO - Read the grad state to avoid bwd pass if not needed
     from torchdynamo.testing import reduce_to_scalar_loss
 
     out = gm(*args)
@@ -285,13 +286,14 @@ def generate_dynamo_repro_string(gm, args, compiler_name):
 
     setup_module = textwrap.dedent(
         f"""
-        import repro_module
-        mod = repro_module.ReproModule().cuda()
+        import module
+        mod = module.ReproModule().cuda()
         opt_mod = torchdynamo.optimize("{compiler_name}")(mod)
 
         """
     )
 
+    # TODO - Figure out the amp state
     run_module = textwrap.dedent(
         """
         with torch.cuda.amp.autocast():
@@ -304,16 +306,18 @@ def generate_dynamo_repro_string(gm, args, compiler_name):
 
 
 def dump_dynamo_state(gm, args, compiler_name):
+    import tarfile
     subdir = f"{minifier_dir()}/checkpoints"
     if not os.path.exists(subdir):
         os.makedirs(subdir, exist_ok=True)
 
-    subdir = os.path.join(subdir, f"{len(gm.graph.nodes)}")
-    if not os.path.exists(subdir):
-        os.makedirs(subdir, exist_ok=True)
+    tmp_dir = os.path.join(subdir, f"{len(gm.graph.nodes)}")
+    if os.path.exists(tmp_dir):
+        shutil.rmtree(tmp_dir)
+    os.makedirs(tmp_dir, exist_ok=True)
 
-    file_name = os.path.join(subdir, "repro.py")
-    gm_dir = os.path.join(subdir, "repro_module")
+    file_name = os.path.join(tmp_dir, "repro.py")
+    gm_dir = os.path.join(tmp_dir, "module")
     if not os.path.exists(gm_dir):
         os.makedirs(gm_dir, exist_ok=True)
     print(f"Writing checkpoint with {len(gm.graph.nodes)} nodes to {file_name}")
@@ -329,16 +333,18 @@ def dump_dynamo_state(gm, args, compiler_name):
     with open(file_name, "w") as fd:
         gm.to_folder(gm_dir, "ReproModule")
         fd.write(generate_dynamo_repro_string(gm, args, compiler_name))
-    repro_module_path = os.path.join(torchdynamo.config.base_dir, "repro_module")
-    shutil.rmtree(repro_module_path)
-    shutil.copytree(subdir, repro_module_path)
+    local_dir = os.path.join(torchdynamo.config.base_dir, "repro")
+    if os.path.exists(local_dir):
+        shutil.rmtree(local_dir)
+    shutil.copytree(tmp_dir, local_dir)
+    local_tar_file = os.path.join(torchdynamo.config.base_dir, "repro.tar.gz")
+    with tarfile.open(local_tar_file, "w:gz") as tar:
+        tar.add(local_dir, arcname=os.path.basename(local_dir))
 
 
 # This one might
 def wrap_dynamo_debug(compiler, compiler_name: str):
     from difflib import SequenceMatcher
-
-    from torchdynamo.testing import reduce_to_scalar_loss
 
     @functools.wraps(compiler)
     def debug_wrapper(gm, example_inputs, **kwargs):
@@ -351,6 +357,7 @@ def wrap_dynamo_debug(compiler, compiler_name: str):
             try:
                 fwd_bwd(compiled_gm, example_inputs)
             except Exception as exc:
+                print("Original model failed with the following error", exc)
                 dump_state = functools.partial(
                     dump_dynamo_state, compiler_name=compiler_name
                 )
@@ -359,7 +366,6 @@ def wrap_dynamo_debug(compiler, compiler_name: str):
                         fx.GraphModule(gm, copy.deepcopy(gm.graph)), example_inputs
                     )
                 else:
-                    config.repro_level = 0
                     # We cannot dump to minifier because minifier expects an fx
                     # graph module. The one above works because make_fx is used
                     # to generate Fx graph module. We cannot do this here
@@ -368,7 +374,7 @@ def wrap_dynamo_debug(compiler, compiler_name: str):
                     orig_failure = str(exc)
 
                     def fails(mod, inps):
-                        # Switch off recursive repro
+                        # TODO - Add accuracy chec
                         try:
                             fwd_bwd(compiler(mod, example_inputs, **kwargs), inps)
                             return False
