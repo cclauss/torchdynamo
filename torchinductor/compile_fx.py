@@ -11,6 +11,7 @@ from torchdynamo.debug_utils import wrap_debug
 from torchdynamo.optimizations.backends import aot_autograd
 from torchdynamo.optimizations.normalize import normalize_ir
 from torchdynamo.testing import same
+from torchdynamo.utils import dynamo_timed
 from torchdynamo.utils import identity
 from torchdynamo.utils import init_logging
 
@@ -61,6 +62,7 @@ class CheckEachNode(torch.fx.Interpreter):
         return expected
 
 
+@dynamo_timed
 @functools.partial(wrap_debug, compiler_name="inductor")
 def compile_fx_inner(
     gm: torch.fx.GraphModule,
@@ -94,6 +96,7 @@ def compile_fx_inner(
     return compiled_fn
 
 
+@dynamo_timed
 def cudagraphify(model, inputs, static_input_idxs=()):
     """
     Assumes inputs[static_input_idxs[i]] are always the same memory address
@@ -192,6 +195,7 @@ def compile_fx(model_: torch.fx.GraphModule, example_inputs_: List[torch.Tensor]
     num_example_inputs = len(example_inputs_)
     cudagraphs = BoxedBool(config.triton.cudagraphs)
 
+    @dynamo_timed
     def fw_compiler(model: torch.fx.GraphModule, example_inputs):
         if config.debug:
             print("FORWARD GRAPH:")
@@ -201,6 +205,7 @@ def compile_fx(model_: torch.fx.GraphModule, example_inputs_: List[torch.Tensor]
             model, example_inputs, num_fixed=fixed, cudagraphs=cudagraphs
         )
 
+    @dynamo_timed
     def bw_compiler(model: torch.fx.GraphModule, example_inputs):
         if config.debug:
             print("BACKWARD GRAPH:")
