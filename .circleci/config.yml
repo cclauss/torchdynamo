@@ -23,11 +23,8 @@ commands:
             else
               source .circleci/setup_env.sh
               conda install -y -c conda-forge git-lfs
-              git lfs install --skip-repo
-              # git clone --recursive --depth=1 --shallow-submodules git@github.com:pytorch/benchmark.git torchbenchmark
-              # above doesn't work due to git-lfs auth issues, workaround with a tarball:
-              wget -O torchbenchmark.tar.bz2 "https://drive.google.com/u/0/uc?id=1KvYsqipsvvv3pnNkJzME0iTemDZe0buC&export=download&confirm=t"
-              tar jxvf torchbenchmark.tar.bz2
+              git lfs install --skip-repo --skip-smudge
+              git clone --recursive --depth=1 --shallow-submodules git@github.com:pytorch/benchmark.git torchbenchmark
               (cd torchbenchmark && python install.py && touch env-v4.key)
             fi
       - run:
@@ -288,4 +285,3 @@ workflows:
       - inductor_hf_training_0
       - inductor_hf_training_1
       - inductor_hf_training_2
-
