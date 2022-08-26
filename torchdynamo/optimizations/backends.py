@@ -854,8 +854,8 @@ class CorrectnessCheckerBackend:
 
     def __call__(self, gm: torch.fx.GraphModule, example_inputs):
         from functorch.compile import minifier
-        from torchdynamo.testing import reduce_to_scalar_loss
 
+        from torchdynamo.testing import reduce_to_scalar_loss
 
         self.restore = checkpoint_params(gm)
         self.original_example_inputs = clone_inputs(example_inputs)
@@ -878,7 +878,6 @@ class CorrectnessCheckerBackend:
                 return True
             return False
 
-
         def fails(mod, inps):
             try:
                 if does_it_run(mod, inps):
@@ -888,7 +887,6 @@ class CorrectnessCheckerBackend:
                 if "view size is" in str(e):
                     return True
                 return False
-
 
         config.raise_on_backend_error = True
         try:
