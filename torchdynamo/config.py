@@ -113,9 +113,7 @@ class AccessLimitingConfig(ModuleType):
 
     # Automatically split model graph into pieces to match DDP bucket sizes
     # to allow DDP comm/compute overlap
-    optimize_ddp = True
-    debug_optimize_ddp = False
-
+    optimize_ddp = False
 
     def __setattr__(self, name, value):
         if sys.version_info > (3, 8):
@@ -131,5 +129,5 @@ class AccessLimitingConfig(ModuleType):
             ), f"Trying to del {name} - this value does not exist in torchdynamo.config"
         object.__delattr__(self, name)
 
-sys.modules[__name__] = AccessLimitingConfig("config")
 
+sys.modules[__name__] = AccessLimitingConfig("config")
