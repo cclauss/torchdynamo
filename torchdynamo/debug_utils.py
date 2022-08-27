@@ -13,6 +13,7 @@ import torch.fx as fx
 
 import torchdynamo
 from torchdynamo import config
+from torchdynamo.utils import clone_inputs, same
 
 
 def minifier_dir():
@@ -256,12 +257,16 @@ def wrap_debug(compiler, compiler_name: str):
 
 
 def fwd_bwd(gm, args):
-    # TODO - Read the grad state to avoid bwd pass if not needed
     from torchdynamo.testing import reduce_to_scalar_loss
-
+    from torchdynamo.testing import requires_bwd_pass
+    from torchdynamo.testing import collect_results
     out = gm(*args)
-    reduce_to_scalar_loss(out).backward()
-    return out
+    if requires_bwd_pass(out):
+        loss = reduce_to_scalar_loss(out)
+        loss.backward()
+        return collect_results(gm, out, loss, args)
+    else:
+        return out
 
 
 def generate_dynamo_repro_string(gm, args, compiler_name):
@@ -342,6 +347,15 @@ def dump_dynamo_state(gm, args, compiler_name):
         tar.add(local_dir, arcname=os.path.basename(local_dir))
 
 
+
+def same_type(a, b):
+    if isinstance(a, torch.Tensor):
+        return isinstance(b, torch.Tensor)
+    elif isinstance(a, (list, tuple)):
+        return all([same_type(ai, bi) for (ai, bi) in zip(a, b)])
+    else:
+        raise NotImplementedError(f"{type(a)} unsupported")
+
 # This one might
 def wrap_dynamo_debug(compiler, compiler_name: str):
     from difflib import SequenceMatcher
@@ -352,12 +366,20 @@ def wrap_dynamo_debug(compiler, compiler_name: str):
         Find the smallest Fx GraphModule that leads to the same error
         """
         compiled_gm = compiler(gm, example_inputs, **kwargs)
+        compiled_gm.zero_grad()
+        # fwd_bwd(copy.deepcopy(compiled_gm), clone_inputs(example_inputs))
         if config.repro_level > 0:
             config.raise_on_backend_error = True
             try:
-                fwd_bwd(compiled_gm, example_inputs)
+                if config.verify_correctness:
+                    ref = fwd_bwd(copy.deepcopy(gm), clone_inputs(example_inputs))
+                    res = fwd_bwd(copy.deepcopy(compiled_gm), clone_inputs(example_inputs))
+                    assert same(ref, res, cos_similarity=True)
+                else:
+                    fwd_bwd(compiled_gm, clone_inputs(example_inputs))
             except Exception as exc:
                 print("Original model failed with the following error", exc)
+                import pdb; pdb.set_trace()
                 dump_state = functools.partial(
                     dump_dynamo_state, compiler_name=compiler_name
                 )
@@ -376,8 +398,14 @@ def wrap_dynamo_debug(compiler, compiler_name: str):
                     def fails(mod, inps):
                         # TODO - Add accuracy chec
                         try:
-                            fwd_bwd(compiler(mod, example_inputs, **kwargs), inps)
-                            return False
+                            compiled_mod = compiler(mod, clone_inputs(example_inputs), **kwargs)
+                            if config.verify_correctness:
+                                ref = fwd_bwd(mod, clone_inputs(inps))
+                                res = fwd_bwd(compiled_mod, clone_inputs(inps))
+                                return not same(ref, res, cos_similarity=True)
+                            else:
+                                fwd_bwd(compiled_mod, clone_inputs(inps))
+                                return False
                         except Exception as e:
                             new_failure = str(e)
                             if (
